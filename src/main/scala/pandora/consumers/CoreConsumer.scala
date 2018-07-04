@@ -7,11 +7,14 @@ import org.apache.spark.streaming.dstream.InputDStream
 import org.apache.spark.streaming.kafka010.KafkaUtils
 import org.apache.spark.streaming.kafka010.LocationStrategies.PreferConsistent
 import org.apache.spark.streaming.kafka010.ConsumerStrategies.Subscribe
+import pandora.repository.PandoraRepository
+
 import scala.util.parsing.json._
 
-class MainConsumer(ssc: StreamingContext) {
 
-  def streamingContext() = ssc
+
+class CoreConsumer(ssc: StreamingContext) extends Serializable{
+
   private var topics: Array[String] = _
   private var stream: InputDStream[ConsumerRecord[String, String]] = _
   private var kafkaParams: Map[String, Object] = _
@@ -23,7 +26,7 @@ class MainConsumer(ssc: StreamingContext) {
 
   def generateParams(): Unit ={
 
-       kafkaParams = Map[String, Object](
+    kafkaParams = Map[String, Object](
       "bootstrap.servers" -> "192.168.1.5:9092",
       "key.deserializer" -> classOf[StringDeserializer],
       "value.deserializer" -> classOf[StringDeserializer],
@@ -34,11 +37,11 @@ class MainConsumer(ssc: StreamingContext) {
   }
 
   def generateTopics(): Unit ={
-      topics = Array("pandora.ostbtc","pandora.linkbtc","pandora.elfbtc","pandora.ethbtc","pandora.xlmbtc","ethbtc")
+    topics = Array("pandora.ostbtc","pandora.linkbtc","pandora.elfbtc","pandora.ethbtc","pandora.xlmbtc","ethbtc")
   }
 
   def generateStream(): Unit = {
-      stream = KafkaUtils.createDirectStream[String, String](
+    stream = KafkaUtils.createDirectStream[String, String](
       ssc,
       PreferConsistent,
       Subscribe[String, String](topics, kafkaParams)
@@ -46,9 +49,12 @@ class MainConsumer(ssc: StreamingContext) {
   }
 
   def startStreamingProcess(): Unit = {
-    stream.map(record => (record.topic(), record.value())).print()
+    stream.foreachRDD(rdd => {
+      rdd.foreach(record => {
+        val repo = new PandoraRepository
+        repo.persist(JSON.parseFull(record.value()).get.asInstanceOf[Map[String,String]])
+        repo.release_resources()
+      })
+    })
   }
-
-  //    stream.map(record => (record.topic,JSON.parseFull(record.value.toString))).print
-  //    stream.foreachRDD(record => println(record.value.toString))
 }
