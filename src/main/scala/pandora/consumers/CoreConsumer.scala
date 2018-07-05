@@ -22,7 +22,6 @@ class CoreConsumer(ssc: StreamingContext) extends Serializable{
   generateParams()
   generateTopics()
   generateStream()
-  println("initialized...")
 
   def generateParams(): Unit ={
 
@@ -37,7 +36,8 @@ class CoreConsumer(ssc: StreamingContext) extends Serializable{
   }
 
   def generateTopics(): Unit ={
-    topics = Array("pandora.ostbtc","pandora.linkbtc","pandora.elfbtc","pandora.ethbtc","pandora.xlmbtc","ethbtc")
+//    topics = Array("pandora.ostbtc","pandora.linkbtc","pandora.elfbtc","pandora.ethbtc","pandora.xlmbtc","ethbtc")
+        topics = Array("pandora.ethbtc")
   }
 
   def generateStream(): Unit = {
