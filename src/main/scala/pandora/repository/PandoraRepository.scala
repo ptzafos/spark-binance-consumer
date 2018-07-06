@@ -6,7 +6,7 @@ import java.util.{Date, TimeZone}
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.hbase.{Cell, CellUtil, HBaseConfiguration, TableName}
 import org.apache.hadoop.hbase.client._
-import org.apache.hadoop.hbase.filter.PrefixFilter
+import org.apache.hadoop.hbase.filter.{ColumnPrefixFilter, PrefixFilter}
 import org.apache.hadoop.hbase.util.Bytes
 
 import collection.JavaConversions._
@@ -14,8 +14,9 @@ import collection.JavaConversions._
 
 class PandoraRepository extends Serializable() {
 
-  val df: DecimalFormat = new DecimalFormat("#");
-  val dfPerc: DecimalFormat = new DecimalFormat("0.00000");
+  val dfTimestamp: DecimalFormat = new DecimalFormat("#");
+  val dfRate: DecimalFormat = new DecimalFormat("0.00000");
+  val df: DecimalFormat = new DecimalFormat("#.#####");
   val conf: Configuration = HBaseConfiguration.create()
   val connection = ConnectionFactory.createConnection(conf)
   val table = connection.getTable(TableName.valueOf(Bytes.toBytes("default:pandora")))
@@ -26,8 +27,8 @@ class PandoraRepository extends Serializable() {
         val kMap = record("k").asInstanceOf[Map[String, String]]
         val rowKey = record("s") + convertToDate(kMap("t").asInstanceOf[Double])
         val put = new Put(Bytes.toBytes(rowKey))
-        put.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("start_time"), Bytes.toBytes(df.format(kMap("t"))))
-        put.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("end_time"), Bytes.toBytes(df.format(kMap("T"))))
+        put.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("start_time"), Bytes.toBytes(dfTimestamp.format(kMap("t"))))
+        put.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("end_time"), Bytes.toBytes(dfTimestamp.format(kMap("T"))))
         put.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("open"), Bytes.toBytes(kMap("o")))
         put.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("close"), Bytes.toBytes(kMap("c")))
         put.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("high"), Bytes.toBytes(kMap("h")))
@@ -38,12 +39,14 @@ class PandoraRepository extends Serializable() {
         put.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("closed"), Bytes.toBytes(String.valueOf(kMap("x"))))
         put.addColumn(Bytes.toBytes("history"), Bytes.toBytes("closed-00"), Bytes.toBytes(kMap("c")))
         put.addColumn(Bytes.toBytes("history"), Bytes.toBytes("open-00"), Bytes.toBytes(kMap("o")))
+        put.addColumn(Bytes.toBytes("history"), Bytes.toBytes("volume-00"), Bytes.toBytes(kMap("v")))
         val gain = calculateGain(kMap("o").toFloat, kMap("c").toFloat)
-        put.addColumn(Bytes.toBytes("history"), Bytes.toBytes("gain-00"), Bytes.toBytes(dfPerc.format(gain)))
+        put.addColumn(Bytes.toBytes("history"), Bytes.toBytes("gain-00"), Bytes.toBytes(dfRate.format(gain)))
         if (isPreviousClosed(kMap("s"))) {
           updateHistory(rowKey, record("s"))
         }
         table.put(put)
+        updateEMAs(rowKey, record("s"), kMap("c").toFloat)
       }
     }
   }
@@ -68,10 +71,79 @@ class PandoraRepository extends Serializable() {
     }
   }
 
-  def calculateEMAs(tokenPrefix: String): Unit = {
-    val scan = new Scan()
-    scan.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("close"))
+  def updateSMAs(rowKey: String, tokenPrefix: String, resultList: List[Cell], periods: Int): Unit = {
+    var ema: Float = 0
+    val put = new Put(Bytes.toBytes(rowKey))
+    for (c: Cell <- resultList) {
+      ema += Bytes.toString(CellUtil.cloneValue(c)).toFloat
+    }
+    if (periods == 12) {
+      put.addColumn(Bytes.toBytes("indexes"), Bytes.toBytes("ema12"), Bytes.toBytes(df.format(ema / periods)))
+      table.put(put)
+    }
+    if (periods == 26) {
+      put.addColumn(Bytes.toBytes("indexes"), Bytes.toBytes("ema26"), Bytes.toBytes(df.format(ema / periods)))
+      table.put(put)
+    }
+  }
 
+  def previousColumnValue(tokenPrefix: String, columnFamily: String, column: String): Option[String] = {
+    val scan = new Scan()
+    val filter = new PrefixFilter(Bytes.toBytes(tokenPrefix))
+    scan.addColumn(Bytes.toBytes(columnFamily), Bytes.toBytes(column))
+    scan.setFilter(filter)
+    scan.setLimit(2)
+    scan.setReversed(true)
+    val results = table.getScanner(scan)
+    results.next()
+    val result = Option(results.next())
+    if (result.isEmpty) {
+      return None
+    }
+    val cell = result.get.listCells().get(0)
+    return Option(Bytes.toString(CellUtil.cloneValue(cell)))
+  }
+
+  def updateEMAs(rowKey: String, tokenPrefix: String, closePrice: Float): Unit = {
+    val get = new Get(Bytes.toBytes(rowKey))
+    val columnFilter = new ColumnPrefixFilter(Bytes.toBytes("closed-"))
+    get.addFamily(Bytes.toBytes("history"))
+    get.setFilter(columnFilter)
+    val result = table.get(get)
+    val cells = Option(result.listCells())
+    if (cells.isEmpty) {
+      return
+    }
+    val resultList = cells.get.toList
+    val ema12Multiplier: Float = 2 / (12 + 1)
+    val ema26Multiplier: Float = 2 / (26 + 1)
+    if (resultList.size < 12) {
+      return
+    }
+    if (resultList.size == 12 && previousColumnValue(tokenPrefix, "indexes", "ema12").isEmpty) {
+      updateSMAs(rowKey, tokenPrefix, resultList, 12)
+      return
+    }
+    if (resultList.size < 26) {
+      val preEma12 = previousColumnValue(tokenPrefix, "indexes", "ema12").get
+      val put = new Put(Bytes.toBytes(rowKey))
+      val newEma12 = (closePrice - preEma12.toFloat) * ema12Multiplier + preEma12
+      put.addColumn(Bytes.toBytes("indexes"), Bytes.toBytes("ema12"), Bytes.toBytes(df.format(newEma12)))
+      table.put(put)
+      return
+    }
+    if (resultList.size == 26 && previousColumnValue(tokenPrefix, "indexes", "ema26").isEmpty) {
+      updateSMAs(rowKey, tokenPrefix, resultList, 26)
+      return
+    }
+    val preEma12 = previousColumnValue(tokenPrefix, "indexes", "ema12").get
+    val preEma26 = previousColumnValue(tokenPrefix, "indexes", "ema26").get
+    val put = new Put(Bytes.toBytes(rowKey))
+    val newEma12 = (closePrice - preEma12.toFloat) * ema12Multiplier + preEma12
+    val newEma26 = (closePrice - preEma26.toFloat) * ema26Multiplier + preEma26
+    put.addColumn(Bytes.toBytes("indexes"), Bytes.toBytes("ema12"), Bytes.toBytes(df.format(newEma12)))
+    put.addColumn(Bytes.toBytes("indexes"), Bytes.toBytes("ema26"), Bytes.toBytes(df.format(newEma26)))
+    table.put(put)
   }
 
 
@@ -79,6 +151,7 @@ class PandoraRepository extends Serializable() {
     val scan = new Scan()
     scan.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("close"))
     scan.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("open"))
+    scan.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("volume"))
     val filter = new PrefixFilter(Bytes.toBytes(tokenPrefix));
     scan.setFilter(filter)
     scan.setReversed(true)
@@ -95,32 +168,39 @@ class PandoraRepository extends Serializable() {
         val put = new Put(Bytes.toBytes(rowKey))
         var closedString: String = null
         var openString: String = null
+        var volumeString: String = null
         val qualifier = Bytes.toString(CellUtil.cloneQualifier(c))
         if (period < 10) {
           closedString = "closed-0"
           openString = "open-0"
           gainString = "gain-0"
+          volumeString = "volume-0"
         } else {
           closedString = "closed-"
           openString = "open-"
           gainString = "gain-"
+          volumeString = "volume-"
         }
         qualifier match {
           case "open" => {
             put.addColumn(Bytes.toBytes("history"), Bytes.toBytes(openString + period), CellUtil.cloneValue(c))
-            open = Bytes.toFloat(CellUtil.cloneValue(c))
+            open = Bytes.toString(CellUtil.cloneValue(c)).toFloat
             table.put(put)
           }
           case "close" => {
             put.addColumn(Bytes.toBytes("history"), Bytes.toBytes(closedString + period), CellUtil.cloneValue(c))
-            close = Bytes.toFloat(CellUtil.cloneValue(c))
+            close = Bytes.toString(CellUtil.cloneValue(c)).toFloat
+            table.put(put)
+          }
+          case "volume" => {
+            put.addColumn(Bytes.toBytes("history"), Bytes.toBytes(volumeString + period), CellUtil.cloneValue(c))
             table.put(put)
           }
         }
       }
       val putGain = new Put(Bytes.toBytes(rowKey))
       val gain = calculateGain(open, close)
-      putGain.addColumn(Bytes.toBytes("history"), Bytes.toBytes(gainString + period), Bytes.toBytes(dfPerc.format(gain)))
+      putGain.addColumn(Bytes.toBytes("history"), Bytes.toBytes(gainString + period), Bytes.toBytes(dfRate.format(gain)))
       table.put(putGain)
       period += 1
     }
@@ -133,7 +213,7 @@ class PandoraRepository extends Serializable() {
 
   def calculateGain(open: Float, close: Float): Float = {
     if (open > close) {
-      return -(open - close) / open
+      return -((open - close) / open)
     } else {
       return (close - open) / close
     }
