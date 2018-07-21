@@ -3,6 +3,7 @@ package pandora.repository
 import java.text.{DecimalFormat, SimpleDateFormat}
 import java.util.{Date, TimeZone}
 
+import org.apache.commons.lang.time.DateUtils
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.hbase.{Cell, CellUtil, HBaseConfiguration, TableName}
 import org.apache.hadoop.hbase.client._
@@ -42,7 +43,7 @@ class PandoraRepository extends Serializable() {
         put.addColumn(Bytes.toBytes("history"), Bytes.toBytes("volume-00"), Bytes.toBytes(kMap("v")))
         val gain = calculateGain(kMap("o").toFloat, kMap("c").toFloat)
         put.addColumn(Bytes.toBytes("history"), Bytes.toBytes("gain-00"), Bytes.toBytes(dfRate.format(gain)))
-        if (isPreviousClosed(kMap("s"))) {
+        if (isPreviousClosed(rowKey)) {
           updateHistory(rowKey, record("s"))
         }
         table.put(put)
@@ -51,19 +52,21 @@ class PandoraRepository extends Serializable() {
     }
   }
 
-  def isPreviousClosed(tokenPrefix: String): Boolean = {
-    val scan = new Scan()
-    val filter = new PrefixFilter(Bytes.toBytes(tokenPrefix))
-    scan.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("closed"))
-    scan.setFilter(filter)
-    scan.setLimit(1)
-    scan.setReversed(true)
-    val results = table.getScanner(scan)
-    val result = Option(results.next())
+  def isPreviousClosed(rowKey: String): Boolean = {
+//    val scan = new Scan()
+//    val filter = new PrefixFilter(Bytes.toBytes(tokenPrefix))
+//    scan.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("closed"))
+//    scan.setFilter(filter)
+//    scan.setLimit(1)
+//    scan.setReversed(true)
+//    val results = table.getScanner(scan)
+    val get = new Get(Bytes.toBytes(getPreviousRowKey(rowKey)))
+    get.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("closed"))
+    val result = table.get(get)
     if (result.isEmpty) {
       return false
     }
-    val cell = result.get.listCells().get(0)
+    val cell = result.listCells().get(0)
     if (Bytes.toString(CellUtil.cloneValue(cell)).equals("true")) {
       return true
     } else {
@@ -87,20 +90,14 @@ class PandoraRepository extends Serializable() {
     }
   }
 
-  def previousColumnValue(tokenPrefix: String, columnFamily: String, column: String): Option[String] = {
-    val scan = new Scan()
-    val filter = new PrefixFilter(Bytes.toBytes(tokenPrefix))
-    scan.addColumn(Bytes.toBytes(columnFamily), Bytes.toBytes(column))
-    scan.setFilter(filter)
-    scan.setLimit(2)
-    scan.setReversed(true)
-    val results = table.getScanner(scan)
-    results.next()
-    val result = Option(results.next())
-    if (result.isEmpty) {
+  def previousColumnValue(rowKey: String, columnFamily: String, column: String): Option[String] = {
+    val get = new Get(Bytes.toBytes(getPreviousRowKey(rowKey)))
+    get.addColumn(Bytes.toBytes(columnFamily),Bytes.toBytes(column))
+    val result = table.get(get)
+    if(result.isEmpty){
       return None
     }
-    val cell = result.get.listCells().get(0)
+    val cell = result.listCells().get(0)
     return Option(Bytes.toString(CellUtil.cloneValue(cell)))
   }
 
@@ -211,6 +208,8 @@ class PandoraRepository extends Serializable() {
 
   }
 
+
+
   def calculateGain(open: Float, close: Float): Float = {
     if (open > close) {
       return -((open - close) / open)
@@ -221,16 +220,25 @@ class PandoraRepository extends Serializable() {
 
 
   def convertToDate(timestamp: Double): String = {
-    val dateFormat = new SimpleDateFormat("yyyy-MM-dd;hh:mm:ss;zzz")
+    val dateFormat = new SimpleDateFormat(";yyyy-MM-dd hh:mm:ss zzz")
     dateFormat.setTimeZone(TimeZone.getTimeZone("UTC"))
     val date = new Date(timestamp.toLong)
 
     dateFormat.format(date)
   }
 
+  def getPreviousRowKey(rowKey: String): String = {
+    val dateFormat = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss zzz")
+    val splitted = rowKey.split(";")
+    val date: Date = DateUtils.addMinutes(dateFormat.parse(splitted(1)), -1)
+
+    splitted(0) + ";" + dateFormat.format(date)
+  }
+
+
   def release_resources(): Unit = {
-    connection.close()
     table.close()
+    connection.close()
   }
 
 

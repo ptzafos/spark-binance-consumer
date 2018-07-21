@@ -16,7 +16,7 @@ import scala.util.parsing.json._
 class CoreConsumer(ssc: StreamingContext) extends Serializable{
 
   private var topics: Array[String] = _
-  private var stream: InputDStream[ConsumerRecord[String, String]] = _
+  private var dstream: InputDStream[ConsumerRecord[String, String]] = _
   private var kafkaParams: Map[String, Object] = _
 
   generateParams()
@@ -26,7 +26,7 @@ class CoreConsumer(ssc: StreamingContext) extends Serializable{
   def generateParams(): Unit ={
 
     kafkaParams = Map[String, Object](
-      "bootstrap.servers" -> "192.168.1.5:9092",
+      "bootstrap.servers" -> "192.168.1.41:9092",
       "key.deserializer" -> classOf[StringDeserializer],
       "value.deserializer" -> classOf[StringDeserializer],
       "group.id" -> "pandora-analytics",
@@ -41,7 +41,7 @@ class CoreConsumer(ssc: StreamingContext) extends Serializable{
   }
 
   def generateStream(): Unit = {
-    stream = KafkaUtils.createDirectStream[String, String](
+    dstream = KafkaUtils.createDirectStream[String, String](
       ssc,
       PreferConsistent,
       Subscribe[String, String](topics, kafkaParams)
@@ -49,7 +49,7 @@ class CoreConsumer(ssc: StreamingContext) extends Serializable{
   }
 
   def startStreamingProcess(): Unit = {
-    stream.foreachRDD(rdd => {
+    dstream.foreachRDD(rdd => {
       rdd.foreach(record => {
         val repo = new PandoraRepository
         repo.persist(JSON.parseFull(record.value()).get.asInstanceOf[Map[String,String]])
