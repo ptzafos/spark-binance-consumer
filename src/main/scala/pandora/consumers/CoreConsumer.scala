@@ -53,7 +53,7 @@ class CoreConsumer(ssc: StreamingContext) extends Serializable{
       rdd.foreach(record => {
         val repo = new PandoraRepository
         repo.persist(JSON.parseFull(record.value()).get.asInstanceOf[Map[String,String]])
-        repo.release_resources()
+        repo.releaseResources()
       })
     })
   }
