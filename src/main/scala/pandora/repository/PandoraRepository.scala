@@ -22,7 +22,7 @@ class PandoraRepository extends Serializable() {
   val conf: Configuration = HBaseConfiguration.create()
   val connection = ConnectionFactory.createConnection(conf)
   val table = connection.getTable(TableName.valueOf(Bytes.toBytes("default:pandora")))
-  val kline = 1 //kline in minutes
+  val kline: Integer = 1 //kline in minutes
 
   def persist(record: Map[String, String]): Unit = {
     record("e") match {
@@ -108,8 +108,8 @@ class PandoraRepository extends Serializable() {
       return
     }
     val resultList = cells.get.toList
-    val ema12Multiplier: Float = 2f / (12 + 1)
-    val ema26Multiplier: Float = 2f / (26 + 1)
+    val ema12Multiplier: Float = 2f / (12f + 1f)
+    val ema26Multiplier: Float = 2f / (26f + 1f)
     if (resultList.size < 12) {
       return
     }
@@ -147,7 +147,7 @@ class PandoraRepository extends Serializable() {
     scan.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("close"))
     scan.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("open"))
     scan.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("volume"))
-    val filter = new PrefixFilter(Bytes.toBytes(rowKey.split(";")(1)))
+    val filter = new PrefixFilter(Bytes.toBytes(rowKey.split(";")(0)))
     scan.setFilter(filter)
     scan.setReversed(true)
     scan.setLimit(25)
@@ -284,7 +284,7 @@ class PandoraRepository extends Serializable() {
 
     val scan = new Scan()
     scan.addColumn(Bytes.toBytes("indexes"), Bytes.toBytes("macd_line"))
-    val filter = new PrefixFilter(Bytes.toBytes(rowKey.split(";")(1)))
+    val filter = new PrefixFilter(Bytes.toBytes(rowKey.split(";")(0)))
     scan.setFilter(filter)
     scan.setReversed(true)
     scan.setLimit(9)
