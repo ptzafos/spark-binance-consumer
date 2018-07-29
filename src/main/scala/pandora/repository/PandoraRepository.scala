@@ -3,15 +3,20 @@ package pandora.repository
 import java.text.{DecimalFormat, SimpleDateFormat}
 import java.util.{Date, TimeZone}
 
+import javax.ws.rs.core.MediaType
 import org.apache.commons.lang.time.DateUtils
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.hbase.{Cell, CellUtil, HBaseConfiguration, TableName}
 import org.apache.hadoop.hbase.client._
 import org.apache.hadoop.hbase.filter.{ColumnPrefixFilter, PrefixFilter}
 import org.apache.hadoop.hbase.util.Bytes
+import org.apache.http.client.methods.HttpPost
+import org.apache.http.entity.StringEntity
+import org.apache.http.impl.client.{CloseableHttpClient, HttpClientBuilder}
 
 import scala.util.control.Breaks._
 import collection.JavaConversions._
+import scala.util.parsing.json.JSONObject
 
 
 class PandoraRepository extends Serializable() {
@@ -23,6 +28,9 @@ class PandoraRepository extends Serializable() {
   val connection = ConnectionFactory.createConnection(conf)
   val table = connection.getTable(TableName.valueOf(Bytes.toBytes("default:pandora")))
   val kline: Integer = 1 //kline in minutes
+  var macd: Option[Float] = None
+  var rsi: Option[Float] = None
+
 
   def persist(record: Map[String, String]): Unit = {
     record("e") match {
@@ -50,7 +58,23 @@ class PandoraRepository extends Serializable() {
         }
         table.put(put)
         updateEMAs(rowKey, kMap("c").toFloat)
-        updateRSI(rowKey)
+        updateRSI (rowKey)
+        if (macd.isDefined) {
+          val request = Map("key" -> rowKey, "close" -> kMap("c").toFloat, "rsi" -> rsi.get, "macd" -> macd.get)
+          val post = new HttpPost("http://localhost:8080/pandora-analytics")
+          post.setEntity(new StringEntity(JSONObject(request).toString))
+          System.out.println(new StringEntity(JSONObject(request).toString()))
+          post.setHeader("Content-type", MediaType.APPLICATION_JSON)
+          val httpClient: CloseableHttpClient = HttpClientBuilder.create().build()
+          try {
+            httpClient.execute(post)
+          } catch {
+            case exc: Throwable => exc.printStackTrace()
+          }
+          finally {
+            httpClient.close()
+          }
+        }
       }
     }
   }
@@ -219,6 +243,7 @@ class PandoraRepository extends Serializable() {
         if (cellCounter == 14) {
           val rs: Float = (avgGain / 14f) / (-avgLoss / 14f)
           val rsi: Float = 100f - (100f / (1 + rs))
+          this.rsi = Some(rsi)
           val put = new Put(Bytes.toBytes(rowKey))
           put.addColumn(Bytes.toBytes("indexes"), Bytes.toBytes("rsi"), Bytes.toBytes(df.format(rsi)))
           table.put(put)
@@ -264,16 +289,16 @@ class PandoraRepository extends Serializable() {
     connection.close()
   }
 
-  def updateFirstSignalLine(rowKey:String , resultList: List[Result], macdLine:Float): Unit = {
+  def updateFirstSignalLine(rowKey: String, resultList: List[Result], macdLine: Float): Unit = {
     var macd_line_sum: Float = 0f
     for (result: Result <- resultList) {
       val cell = result.listCells().get(0)
       macd_line_sum += Bytes.toString(CellUtil.cloneValue(cell)).toFloat
     }
     val put = new Put(Bytes.toBytes(rowKey))
-    val macd: Float = macdLine - (macd_line_sum/9f)
+    val macd: Float = macdLine - (macd_line_sum / 9f)
     put.addColumn(Bytes.toBytes("indexes"), Bytes.toBytes("macd"), Bytes.toBytes(df.format(macd)))
-    put.addColumn(Bytes.toBytes("indexes"), Bytes.toBytes("signal_line"), Bytes.toBytes(df.format(macd_line_sum/9f)))
+    put.addColumn(Bytes.toBytes("indexes"), Bytes.toBytes("signal_line"), Bytes.toBytes(df.format(macd_line_sum / 9f)))
     table.put(put)
   }
 
@@ -290,7 +315,7 @@ class PandoraRepository extends Serializable() {
     scan.setLimit(9)
     val results = table.getScanner(scan)
     val resultList = results.toList
-    if(resultList.size < 9){
+    if (resultList.size < 9) {
       return
     }
     if (resultList.size == 9 && previousColumnValue(rowKey, "indexes", "macd").isEmpty) {
@@ -301,6 +326,7 @@ class PandoraRepository extends Serializable() {
     val macdMultiplier: Float = 2f / (9f + 1f)
     val newEmaMacd: Float = (macdLine - prevEmaMacd) * macdMultiplier + prevEmaMacd
     val macd: Float = macdLine - newEmaMacd
+    this.macd = Some(macd)
     val put = new Put(Bytes.toBytes(rowKey))
     put.addColumn(Bytes.toBytes("indexes"), Bytes.toBytes("macd"), Bytes.toBytes(df.format(macd)))
     put.addColumn(Bytes.toBytes("indexes"), Bytes.toBytes("signal_line"), Bytes.toBytes(df.format(newEmaMacd)))
