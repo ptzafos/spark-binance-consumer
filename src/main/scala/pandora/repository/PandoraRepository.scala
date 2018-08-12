@@ -37,6 +37,7 @@ class PandoraRepository extends Serializable() {
       case "kline" => {
         val kMap = record("k").asInstanceOf[Map[String, String]]
         val rowKey = record("s") + convertToDate(kMap("t").asInstanceOf[Double])
+        val close: Float = kMap("c").toFloat
         val put = new Put(Bytes.toBytes(rowKey))
         put.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("start_time"), Bytes.toBytes(dfTimestamp.format(kMap("t"))))
         put.addColumn(Bytes.toBytes("kline_30m"), Bytes.toBytes("end_time"), Bytes.toBytes(dfTimestamp.format(kMap("T"))))
@@ -57,25 +58,29 @@ class PandoraRepository extends Serializable() {
           updateHistory(rowKey)
         }
         table.put(put)
-        updateEMAs(rowKey, kMap("c").toFloat)
+        updateEMAMACD(rowKey, kMap("c").toFloat)
         updateRSI (rowKey)
         if (macd.isDefined) {
-          val request = Map("key" -> rowKey, "close" -> kMap("c").toFloat, "rsi" -> rsi.get, "macd" -> macd.get)
-          val post = new HttpPost("http://localhost:8080/pandora-analytics")
-          post.setEntity(new StringEntity(JSONObject(request).toString))
-          System.out.println(new StringEntity(JSONObject(request).toString()))
-          post.setHeader("Content-type", MediaType.APPLICATION_JSON)
-          val httpClient: CloseableHttpClient = HttpClientBuilder.create().build()
-          try {
-            httpClient.execute(post)
-          } catch {
-            case exc: Throwable => exc.printStackTrace()
-          }
-          finally {
-            httpClient.close()
-          }
+          executePostRequest(rowKey, close)
         }
       }
+    }
+  }
+
+  def executePostRequest(rowKey:String, closePrice: Float ): Unit = {
+    val request = Map("key" -> rowKey, "close" -> closePrice, "rsi" -> rsi.get, "macd" -> macd.get)
+    val post = new HttpPost("http://localhost:8080/pandora-analytics")
+    post.setEntity(new StringEntity(JSONObject(request).toString))
+    System.out.println(new StringEntity(JSONObject(request).toString()))
+    post.setHeader("Content-type", MediaType.APPLICATION_JSON)
+    val httpClient: CloseableHttpClient = HttpClientBuilder.create().build()
+    try {
+      httpClient.execute(post)
+    } catch {
+      case exc: Throwable => exc.printStackTrace()
+    }
+    finally {
+      httpClient.close()
     }
   }
 
@@ -121,7 +126,7 @@ class PandoraRepository extends Serializable() {
     return Option(Bytes.toString(CellUtil.cloneValue(cell)))
   }
 
-  def updateEMAs(rowKey: String, closePrice: Float): Unit = {
+  def updateEMAMACD(rowKey: String, closePrice: Float): Unit = {
     val get = new Get(Bytes.toBytes(rowKey))
     val columnFilter = new ColumnPrefixFilter(Bytes.toBytes("closed-"))
     get.addFamily(Bytes.toBytes("history"))

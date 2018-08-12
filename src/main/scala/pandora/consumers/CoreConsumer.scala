@@ -24,14 +24,13 @@ class CoreConsumer(ssc: StreamingContext) extends Serializable{
   generateStream()
 
   def generateParams(): Unit ={
-
     kafkaParams = Map[String, Object](
       "bootstrap.servers" -> "192.168.1.41:9092",
       "key.deserializer" -> classOf[StringDeserializer],
       "value.deserializer" -> classOf[StringDeserializer],
       "group.id" -> "pandora-analytics",
-      "auto.offset.reset" -> "latest",
-      "enable.auto.commit" -> (false: java.lang.Boolean)
+      "auto.offset.reset" -> "earliest",
+      "enable.auto.commit" -> (true: java.lang.Boolean)
     )
   }
 
